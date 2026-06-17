@@ -44,7 +44,16 @@ from google import genai
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-MODEL_NAME = "gemini-3-flash"  # Free Tier model
+# Default Free Tier model. "gemini-flash-latest" is a moving alias that always
+# resolves to the current Gemini Flash model, so it keeps working as Google
+# rotates version numbers. You can override it without editing code by adding a
+# line to .streamlit/secrets.toml, e.g.:
+#
+#     GEMINI_MODEL = "gemini-2.5-flash"
+#
+# If you hit a "model not found" error, the app will list the exact model IDs
+# your API key is allowed to use so you can pick a valid one.
+DEFAULT_MODEL = "gemini-flash-latest"
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +246,34 @@ text of the following lead-in (reproduced verbatim, with no additional commentar
     return prompt
 
 
+def get_client() -> genai.Client:
+    """Build a Gemini client using the key from Streamlit secrets."""
+    # The key is pulled securely from Streamlit secrets (never hard-coded).
+    return genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+
+
+def get_model_name() -> str:
+    """Return the model ID, allowing an override via secrets."""
+    return st.secrets.get("GEMINI_MODEL", DEFAULT_MODEL)
+
+
+def list_available_models() -> list[str]:
+    """Return model IDs the API key can use for generateContent."""
+    client = get_client()
+    available = []
+    for model in client.models.list():
+        actions = getattr(model, "supported_actions", None) or []
+        if "generateContent" in actions:
+            # Strip the leading "models/" prefix for readability.
+            available.append(model.name.split("/")[-1])
+    return sorted(available)
+
+
 def generate_stem(prompt: str) -> str:
     """Call the Gemini API via the google-genai client and return the text."""
-    # The key is pulled securely from Streamlit secrets (never hard-coded).
-    client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    client = get_client()
     response = client.models.generate_content(
-        model=MODEL_NAME,
+        model=get_model_name(),
         contents=prompt,
     )
     return response.text
@@ -363,6 +394,20 @@ if st.button("Generate Question Stem", type="primary"):
                 st.session_state.generated_stem = generate_stem(prompt)
             except Exception as exc:  # Surface API/config errors to the user.
                 st.error(f"Generation failed: {exc}")
+                # A 404 / "not found" usually means the model ID is wrong for
+                # this key. Show the IDs that actually work so the user can set
+                # GEMINI_MODEL in secrets accordingly.
+                if "not found" in str(exc).lower() or "404" in str(exc):
+                    try:
+                        models = list_available_models()
+                        if models:
+                            st.info(
+                                "Models available to your API key (set one as "
+                                "`GEMINI_MODEL` in your secrets):\n\n"
+                                + "\n".join(f"- `{m}`" for m in models)
+                            )
+                    except Exception:
+                        pass  # If even listing fails, the first error is enough.
 
 # Render the result in an editable text area so the writer can refine it
 # before copying.
